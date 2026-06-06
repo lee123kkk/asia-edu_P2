@@ -8,13 +8,13 @@ import time
 # [설정]
 ESP32_IP = '192.168.0.9'
 PORT = 8080
-TICKS_PER_CM = 15.435  # ESP32와 동일한 설정값
+TICKS_PER_CM = 15.435  
 
 try:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(2.0)
     sock.connect((ESP32_IP, PORT))
-    print(f"[{ESP32_IP}:{PORT}] 센서 퓨전 시스템 활성화 성공!")
+    print(f"[{ESP32_IP}:{PORT}] 시스템 연결 성공!")
 except Exception as e:
     print(f"접속 에러: {e}")
     sys.exit()
@@ -32,6 +32,7 @@ STATE_MAP = {
     "ARRIVED": "주행 완료 (ARRIVED)"
 }
 
+# 1. 수신 스레드 (로그가 쌓이도록 수정)
 def read_from_socket():
     global running
     while running:
@@ -40,34 +41,34 @@ def read_from_socket():
             if data:
                 for line in data.split('\n'):
                     if "STATE:" in line:
-                        # ESP32 데이터 파싱: "STATE: ... | Count A: ... | Count B: ... | Yaw: ..."
                         try:
                             parts = [p.strip() for p in line.split('|')]
                             state_raw = parts[0].replace("STATE:", "").strip()
                             count_a = int(parts[1].replace("Count A:", "").strip())
                             count_b = int(parts[2].replace("Count B:", "").strip())
-                            yaw = float(parts[4].replace("Yaw:", "").strip())
+                            # 회전 중일 때는 TurnAcc, 직진 중일 때는 Yaw 데이터를 파싱
+                            yaw_data = parts[3].replace("Yaw:", "").strip()
                             
                             avg_ticks = (count_a + count_b) / 2
                             dist_cm = avg_ticks / TICKS_PER_CM
-                            
                             display_state = STATE_MAP.get(state_raw, state_raw)
                             
-                            # 상세 정보 출력
-                            output = (f"\r[상태: {display_state: <15}] "
-                                      f"거리: {dist_cm: >5.1f}cm | "
-                                      f"회전각: {yaw: >6.1f}도 | "
-                                      f"RawTicks: {int(avg_ticks)}       ")
-                            sys.stdout.write(output)
-                            sys.stdout.flush()
+                            # ★ [핵심 수정] 줄바꿈(\n)을 사용하여 이전 로그를 유지함
+                            log_msg = f"[{time.strftime('%H:%M:%S')}] {display_state: <15} | 거리: {dist_cm: >5.1f}cm | 각도: {yaw_data: >6.1f}도 | Ticks: {int(avg_ticks)}"
+                            print(log_msg)
+                            
                         except:
                             pass
-        except:
+            else:
+                raise Exception("연결 끊김.")
+        except Exception as e:
+            print(f"\n🚨 통신 장애: {e}")
             running = False; break
 
 read_thread = threading.Thread(target=read_from_socket, daemon=True)
 read_thread.start()
 
+# 2. 하트비트 송신
 def send_heartbeat():
     while running:
         try: sock.sendall(f"<{active_command}>".encode())
@@ -76,24 +77,27 @@ def send_heartbeat():
 
 threading.Thread(target=send_heartbeat, daemon=True).start()
 
-print("\n" + "="*50)
-print(" 🚀 [정밀 시퀀스 주행] 통제 단말기")
-print(" - [g] : 시퀀스 주행 시작 (145cm -> 회전 -> 220cm)")
-print(" - [x] : 즉시 정지 (E-STOP)")
-print(" - [q] : 종료")
-print("="*50 + "\n")
+# 3. 터미널 제어
+def get_char():
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        ch = sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    return ch
+
+print("\n" + "="*60)
+print(" 🚀 [정밀 시퀀스 로그 모드] 모든 과정이 터미널에 기록됩니다.")
+print(" - [g] : 시작 | [x] : 긴급 정지 | [q] : 종료")
+print("="*60 + "\n")
 
 try:
     while running:
-        fd = sys.stdin.fileno()
-        old = termios.tcgetattr(fd)
-        try:
-            tty.setraw(fd)
-            char = sys.stdin.read(1).lower()
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old)
-            
+        char = get_char().lower()
         if char == 'q': break
         elif char in ['g', 'x']: active_command = char
 finally:
+    running = False
     sock.close()
