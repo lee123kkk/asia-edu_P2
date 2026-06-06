@@ -32,37 +32,38 @@ STATE_MAP = {
     "ARRIVED": "주행 완료 (ARRIVED)"
 }
 
-# 1. 수신 스레드 (로그가 쌓이도록 수정)
+# 1. 수신 스레드
 def read_from_socket():
     global running
     while running:
         try:
             data = sock.recv(1024).decode('utf-8')
             if data:
+                # 데이터를 줄 단위로 나눕니다
                 for line in data.split('\n'):
                     if "STATE:" in line:
                         try:
+                            # 데이터 파싱
                             parts = [p.strip() for p in line.split('|')]
                             state_raw = parts[0].replace("STATE:", "").strip()
                             count_a = int(parts[1].replace("Count A:", "").strip())
                             count_b = int(parts[2].replace("Count B:", "").strip())
-                            # 회전 중일 때는 TurnAcc, 직진 중일 때는 Yaw 데이터를 파싱
-                            yaw_data = parts[3].replace("Yaw:", "").strip()
+                            yaw_data = parts[4].replace("Yaw:", "").strip()
                             
                             avg_ticks = (count_a + count_b) / 2
                             dist_cm = avg_ticks / TICKS_PER_CM
                             display_state = STATE_MAP.get(state_raw, state_raw)
                             
-                            # ★ [핵심 수정] 줄바꿈(\n)을 사용하여 이전 로그를 유지함
+                            # ★ [핵심 수정] 줄바꿈(\n)을 포함하고 flush=True를 사용하여 즉시 출력
                             log_msg = f"[{time.strftime('%H:%M:%S')}] {display_state: <15} | 거리: {dist_cm: >5.1f}cm | 각도: {yaw_data: >6.1f}도 | Ticks: {int(avg_ticks)}"
-                            print(log_msg)
+                            print(log_msg, flush=True) 
                             
-                        except:
-                            pass
+                        except Exception as e:
+                            pass # 파싱 실패 시 무시
             else:
                 raise Exception("연결 끊김.")
         except Exception as e:
-            print(f"\n🚨 통신 장애: {e}")
+            # print(f"\n🚨 통신 장애: {e}") # 디버깅용
             running = False; break
 
 read_thread = threading.Thread(target=read_from_socket, daemon=True)
